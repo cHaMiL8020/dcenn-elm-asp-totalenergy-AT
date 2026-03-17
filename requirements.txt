@@ -1,0 +1,11 @@
+pandas==2.2.0
+numpy==1.26.3
+scikit-learn==1.4.0
+torch==2.2.0
+clingo==5.7.1
+matplotlib==3.8.2
+seaborn==0.13.2
+openpyxl
+pyarrow
+holidays
+pytz==2024.1
