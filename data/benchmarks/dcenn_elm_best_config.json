@@ -1,0 +1,26 @@
+{
+  "feature_set": "baseline_plus_calendar",
+  "feature_count": 11,
+  "features": [
+    "cglo",
+    "ffam",
+    "rr",
+    "tl",
+    "time_sin",
+    "time_cos",
+    "month_sin",
+    "month_cos",
+    "power_lag_24h",
+    "hour",
+    "day_of_week"
+  ],
+  "latent_dim": 10,
+  "elm_hidden_neurons": 256,
+  "epochs": 50,
+  "learning_rate": 0.01,
+  "rmse_mean": 9.944666207180097,
+  "mae_mean": 7.435741634420874,
+  "mape_percent_mean": 9.274523436904385,
+  "asp_anomaly_count_mean": 48.0,
+  "benchmark_total_runtime_seconds": 43.783
+}

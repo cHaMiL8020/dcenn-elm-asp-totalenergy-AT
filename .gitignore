@@ -1,16 +1,6 @@
 # Virtual environment
 .venv/
 
-# Generated data files (large / reproducible via make pipeline)
-data/processed_15min.csv
-data/predictions_2024.csv
-data/flagged_anomalies.csv
-data/benchmarks/
-
-# Raw source data (kept locally, not committed to repo)
-data/gen_dataset.xlsx
-data/weather_data_15min.csv
-
 # Python cache
 __pycache__/
 *.py[cod]
