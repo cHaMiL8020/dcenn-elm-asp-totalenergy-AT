@@ -113,9 +113,25 @@ dcenn-elm-asp-totalenergy-AT/
 | `gen_dataset.xlsx` (sheet `data_2023`) | Total Austrian power generation (MW) | 15-minute |
 | `weather_data_15min.csv` | Weather observations: global radiation (cglo), wind speed (ffam), precipitation (rr), temperature (tl) | 15-minute |
 
-- **Training period:** 2023 (approx. 35,040 timesteps)
-- **Test period:** January 2024 (2,976 timesteps = 31 days)
 - After merging and dropping NaN from lag features: **70,030 rows total**
+
+### Time-Based Data Split (used in training script)
+
+The model uses a strict chronological split in `src/02_train_dcenn_elm.py`:
+
+- `train_df = df[df['timestamp'] < '2024-01-01']`
+- `test_df = df[df['timestamp'] >= '2024-01-01']`
+
+| Split | Timestamp range | Rows | Share |
+|---|---|---:|---:|
+| Train | 2023-01-02 00:15:00 to 2023-12-31 23:45:00 | 34,916 | 49.86% |
+| Test | 2024-01-01 00:00:00 to 2024-12-31 23:45:00 | 35,114 | 50.14% |
+
+### ASP Evaluation Window
+
+For symbolic checking speed and focused analysis, `src/03_apply_asp.py` applies ASP on the first 2,976 rows of the test set (January 2024 only):
+
+- `df_test_window = df.head(2976).copy()`
 
 ---
 
@@ -243,7 +259,7 @@ at_holidays = holidays.Austria(years=[2023, 2024])
 
 ## Performance Results
 
-Evaluated on the January 2024 test set (2,976 × 15-min timesteps):
+Forecasting metrics below are evaluated on the full 2024 test split (35,114 × 15-min timesteps). ASP anomaly counts are reported separately for the January 2024 symbolic window (2,976 timesteps).
 
 ### Absolute Metrics
 
