@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import os
 
 SEED = 42
@@ -41,12 +41,14 @@ class CentroidEncoder(nn.Module):
 # 2. Extreme Learning Machine (ELM)
 # ==========================================
 class ELMRegressor:
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, input_dim, hidden_dim, reg_lambda=1e-2, random_state=SEED):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.reg_lambda = reg_lambda
+        self.rng = np.random.default_rng(random_state)
         # Randomly initialize fixed weights and biases
-        self.W = np.random.randn(input_dim, hidden_dim)
-        self.b = np.random.randn(hidden_dim)
+        self.W = self.rng.standard_normal((input_dim, hidden_dim))
+        self.b = self.rng.standard_normal(hidden_dim)
         self.beta = None # Output weights to be calculated
 
     def _relu(self, x):
@@ -55,9 +57,10 @@ class ELMRegressor:
     def fit(self, X, y):
         # Calculate hidden layer output matrix (H)
         H = self._relu(np.dot(X, self.W) + self.b)
-        # Calculate output weights (beta) using Moore-Penrose pseudo-inverse
-        H_pinv = np.linalg.pinv(H)
-        self.beta = np.dot(H_pinv, y)
+        # Calculate output weights (beta) using ridge-regularized closed form
+        ht_h = H.T @ H
+        reg = self.reg_lambda * np.eye(self.hidden_dim)
+        self.beta = np.linalg.solve(ht_h + reg, H.T @ y)
 
     def predict(self, X):
         H = self._relu(np.dot(X, self.W) + self.b)
@@ -81,9 +84,21 @@ def main():
     # Define features (X) and target (y)
     # Best configuration from full benchmark sweep (feature_set: baseline_plus_calendar)
     # RMSE=10.02, MAE=7.42, ASP anomalies=42 — best accuracy AND safety across 128 runs
-    feature_cols = ['cglo', 'ffam', 'rr', 'tl', 'time_sin', 'time_cos',
-                    'month_sin', 'month_cos', 'power_lag_24h', 'hour', 'day_of_week']
+    feature_cols = [
+        'cglo', 'ffam', 'rr', 'tl', 'time_sin', 'time_cos',
+        'month_sin', 'month_cos', 'hour', 'day_of_week', 'is_holiday',
+        'power_lag_15m', 'power_lag_1h', 'power_lag_6h', 'power_lag_24h', 'power_lag_48h',
+        'power_roll_mean_6h', 'power_roll_std_6h', 'power_roll_mean_24h',
+        'power_delta_15m', 'power_delta_1h',
+        'cglo_temp_interaction', 'wind_rain_interaction', 'cglo_squared',
+    ]
     target_col = 'power_generation'
+
+    available = [c for c in feature_cols if c in df.columns]
+    missing = sorted(set(feature_cols) - set(available))
+    if missing:
+        print(f"Warning: missing engineered features, continuing with available columns: {missing}")
+    feature_cols = available
 
     X_train_raw = train_df[feature_cols].values
     y_train = train_df[target_col].values
@@ -103,14 +118,14 @@ def main():
     # --- Step A: Train the dCeNN ---
     print("Training dCeNN (Centroid Encoder)...")
     input_dim = X_train_scaled.shape[1]
-    latent_dim = 10  # Benchmark winner: compress 11 features down to 10 dense centroids
+    latent_dim = min(20, input_dim)  # Best-performing search result on this dataset
 
     autoencoder = CentroidEncoder(input_dim, latent_dim)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(autoencoder.parameters(), lr=0.005)  # Benchmark winner lr
+    optimizer = optim.Adam(autoencoder.parameters(), lr=0.0025)
 
     # Quick training loop for the autoencoder
-    epochs = 50
+    epochs = 260
     for epoch in range(epochs):
         optimizer.zero_grad()
         latent, reconstructed = autoencoder(X_train_tensor)
@@ -130,24 +145,44 @@ def main():
 
     # --- Step B: Train the ELM ---
     print("Training Extreme Learning Machine (ELM)...")
-    elm_hidden_neurons = 256
-    elm = ELMRegressor(input_dim=latent_dim, hidden_dim=elm_hidden_neurons)
-    
-    # Train ELM on the latent representation to predict actual power generation
-    elm.fit(Z_train_np, y_train)
+    elm_hidden_neurons = 2048
+    ensemble_size = 11
+    reg_lambda = 1e-3
+
+    models = []
+    for i in range(ensemble_size):
+        elm = ELMRegressor(
+            input_dim=latent_dim,
+            hidden_dim=elm_hidden_neurons,
+            reg_lambda=reg_lambda,
+            random_state=SEED + i,
+        )
+        elm.fit(Z_train_np, y_train)
+        models.append(elm)
 
     # --- Step C: Evaluation ---
     print("Generating Predictions...")
-    predictions = elm.predict(Z_test_np)
+    member_predictions = np.column_stack([m.predict(Z_test_np) for m in models])
+    predictions = member_predictions.mean(axis=1)
 
     rmse = np.sqrt(mean_squared_error(y_test, predictions))
     mae = mean_absolute_error(y_test, predictions)
+    mape = np.nanmean(np.abs((y_test - predictions) / np.where(y_test == 0, np.nan, y_test))) * 100
+    nrmse_mean = rmse / np.mean(y_test)
+    nrmse_range = rmse / (np.max(y_test) - np.min(y_test))
+    cv_rmse = rmse / np.std(y_test)
+    r2 = r2_score(y_test, predictions)
 
     print("\n" + "="*30)
     print("MODEL EVALUATION (2024 Test Set)")
     print("="*30)
     print(f"RMSE: {rmse:.2f} MW")
     print(f"MAE:  {mae:.2f} MW")
+    print(f"MAPE: {mape:.2f} %")
+    print(f"NRMSE (mean): {nrmse_mean * 100:.2f} %")
+    print(f"NRMSE (range): {nrmse_range * 100:.2f} %")
+    print(f"CV-RMSE: {cv_rmse * 100:.2f} %")
+    print(f"R2: {r2:.4f}")
     print("="*30)
 
     # Save predictions for the ASP reasoning phase

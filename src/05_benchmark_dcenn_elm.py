@@ -45,11 +45,13 @@ class CentroidEncoder(nn.Module):
 
 
 class ELMRegressor:
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, input_dim, hidden_dim, reg_lambda=1e-2, random_state=42):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.W = np.random.randn(input_dim, hidden_dim)
-        self.b = np.random.randn(hidden_dim)
+        self.reg_lambda = reg_lambda
+        self.rng = np.random.default_rng(random_state)
+        self.W = self.rng.standard_normal((input_dim, hidden_dim))
+        self.b = self.rng.standard_normal(hidden_dim)
         self.beta = None
 
     def _relu(self, x):
@@ -57,8 +59,9 @@ class ELMRegressor:
 
     def fit(self, x_train, y_train):
         h = self._relu(np.dot(x_train, self.W) + self.b)
-        h_pinv = np.linalg.pinv(h)
-        self.beta = np.dot(h_pinv, y_train)
+        ht_h = h.T @ h
+        reg = self.reg_lambda * np.eye(self.hidden_dim)
+        self.beta = np.linalg.solve(ht_h + reg, h.T @ y_train)
 
     def predict(self, x_test):
         h = self._relu(np.dot(x_test, self.W) + self.b)
@@ -143,6 +146,7 @@ def build_feature_sets(available_columns):
             "power_lag_24h",
             "hour",
             "day_of_week",
+            "is_holiday",
         ],
         "baseline_plus_minute": [
             "cglo",
@@ -171,6 +175,32 @@ def build_feature_sets(available_columns):
             "time_cos",
             "month_sin",
             "month_cos",
+        ],
+        "autoregressive_enhanced": [
+            "cglo",
+            "ffam",
+            "rr",
+            "tl",
+            "time_sin",
+            "time_cos",
+            "month_sin",
+            "month_cos",
+            "hour",
+            "day_of_week",
+            "is_holiday",
+            "power_lag_15m",
+            "power_lag_1h",
+            "power_lag_6h",
+            "power_lag_24h",
+            "power_lag_48h",
+            "power_roll_mean_6h",
+            "power_roll_std_6h",
+            "power_roll_mean_24h",
+            "power_delta_15m",
+            "power_delta_1h",
+            "cglo_temp_interaction",
+            "wind_rain_interaction",
+            "cglo_squared",
         ],
     }
 
@@ -218,9 +248,18 @@ def train_and_evaluate(df, config, rules_path, asp_window_size):
         z_train, _ = autoencoder(x_train_tensor)
         z_test, _ = autoencoder(x_test_tensor)
 
-    elm = ELMRegressor(input_dim=config["latent_dim"], hidden_dim=config["elm_hidden_neurons"])
-    elm.fit(z_train.numpy(), y_train)
-    predictions = elm.predict(z_test.numpy())
+    members = []
+    for i in range(config["ensemble_size"]):
+        elm = ELMRegressor(
+            input_dim=config["latent_dim"],
+            hidden_dim=config["elm_hidden_neurons"],
+            reg_lambda=config["reg_lambda"],
+            random_state=seed + i,
+        )
+        elm.fit(z_train.numpy(), y_train)
+        members.append(elm)
+
+    predictions = np.column_stack([m.predict(z_test.numpy()) for m in members]).mean(axis=1)
 
     rmse = float(np.sqrt(mean_squared_error(y_test, predictions)))
     mae = float(mean_absolute_error(y_test, predictions))
@@ -241,6 +280,8 @@ def train_and_evaluate(df, config, rules_path, asp_window_size):
         "elm_hidden_neurons": config["elm_hidden_neurons"],
         "epochs": config["epochs"],
         "learning_rate": config["lr"],
+        "reg_lambda": config["reg_lambda"],
+        "ensemble_size": config["ensemble_size"],
         "seed": seed,
         "rmse": rmse,
         "mae": mae,
@@ -530,6 +571,11 @@ def main():
     parser.add_argument("--output-dir", default="data/benchmarks")
     parser.add_argument("--asp-window-size", type=int, default=2976)
     parser.add_argument("--quick", action="store_true", help="Run a smaller benchmark sweep.")
+    parser.add_argument(
+        "--best-only",
+        action="store_true",
+        help="Run only the strongest tuned configuration for repeatable best-performance checks.",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.processed_path):
@@ -547,31 +593,54 @@ def main():
     if not feature_sets:
         raise ValueError("No valid feature sets found in processed dataset columns.")
 
-    if args.quick:
+    if args.best_only:
         grid = {
-            "latent_dim": [8, 10],
-            "elm_hidden_neurons": [128, 256],
-            "epochs": [50],
-            "lr": [0.01],
+            "latent_dim": [20],
+            "elm_hidden_neurons": [2048],
+            "epochs": [260],
+            "lr": [0.0025],
+            "reg_lambda": [1e-3],
+            "ensemble_size": [11],
             "seed": [42],
         }
+        preferred_feature_sets = ["autoregressive_enhanced"]
+    elif args.quick:
+        grid = {
+            "latent_dim": [20],
+            "elm_hidden_neurons": [1792, 2048],
+            "epochs": [260],
+            "lr": [0.0025],
+            "reg_lambda": [1e-3],
+            "ensemble_size": [11],
+            "seed": [42],
+        }
+        preferred_feature_sets = ["autoregressive_enhanced", "baseline_plus_calendar"]
     else:
         grid = {
-            "latent_dim": [8, 10],
-            "elm_hidden_neurons": [100, 256],
-            "epochs": [50, 120],
-            "lr": [0.01, 0.005],
+            "latent_dim": [16, 20, 24],
+            "elm_hidden_neurons": [1024, 1792, 2048],
+            "epochs": [180, 260],
+            "lr": [0.003, 0.0025],
+            "reg_lambda": [5e-4, 1e-3],
+            "ensemble_size": [9, 11],
             "seed": [42, 1337],
         }
+        preferred_feature_sets = list(feature_sets.keys())
 
     keys = list(grid.keys())
     run_configs = []
-    for feature_set_name, feature_list in feature_sets.items():
+    for feature_set_name in preferred_feature_sets:
+        if feature_set_name not in feature_sets:
+            continue
+        feature_list = feature_sets[feature_set_name]
         for values in itertools.product(*[grid[k] for k in keys]):
             config = dict(zip(keys, values))
             config["feature_set_name"] = feature_set_name
             config["features"] = feature_list
             run_configs.append(config)
+
+    if not run_configs:
+        raise ValueError("No benchmark run configurations were generated from available feature sets.")
 
     print(f"Running benchmark for {len(run_configs)} configurations...")
 
@@ -604,6 +673,8 @@ def main():
         "elm_hidden_neurons",
         "epochs",
         "learning_rate",
+        "reg_lambda",
+        "ensemble_size",
     ]
     metrics = [
         "rmse",
@@ -645,6 +716,8 @@ def main():
         "elm_hidden_neurons": int(best_row["elm_hidden_neurons"]),
         "epochs": int(best_row["epochs"]),
         "learning_rate": float(best_row["learning_rate"]),
+        "reg_lambda": float(best_row["reg_lambda"]),
+        "ensemble_size": int(best_row["ensemble_size"]),
         "rmse_mean": float(best_row["rmse_mean"]),
         "mae_mean": float(best_row["mae_mean"]),
         "mape_percent_mean": float(best_row["mape_percent_mean"]),

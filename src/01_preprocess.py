@@ -51,9 +51,28 @@ def create_features(df):
     at_holidays = holidays.Austria(years=years)
     df['is_holiday'] = df['timestamp'].dt.date.map(lambda d: 1 if d in at_holidays else 0)
 
-    # Lag Features: What was the power generation 24 hours ago?
-    # 24 hours = 96 steps of 15-minutes
+    # Autoregressive lag features at multiple horizons
+    # 1 step=15m, 4 steps=1h, 24 steps=6h, 96 steps=24h, 192 steps=48h
+    df['power_lag_15m'] = df['power_generation'].shift(1)
+    df['power_lag_1h'] = df['power_generation'].shift(4)
+    df['power_lag_6h'] = df['power_generation'].shift(24)
     df['power_lag_24h'] = df['power_generation'].shift(96)
+    df['power_lag_48h'] = df['power_generation'].shift(192)
+
+    # Rolling statistics from past observations only (shifted by 1 to avoid leakage)
+    shifted_power = df['power_generation'].shift(1)
+    df['power_roll_mean_6h'] = shifted_power.rolling(window=24).mean()
+    df['power_roll_std_6h'] = shifted_power.rolling(window=24).std()
+    df['power_roll_mean_24h'] = shifted_power.rolling(window=96).mean()
+
+    # Recent change features
+    df['power_delta_15m'] = df['power_generation'].diff(1)
+    df['power_delta_1h'] = df['power_generation'].diff(4)
+
+    # Weather interaction terms to capture non-linear production dynamics
+    df['cglo_temp_interaction'] = df['cglo'] * df['tl']
+    df['wind_rain_interaction'] = df['ffam'] * df['rr']
+    df['cglo_squared'] = df['cglo'] ** 2
     
     # Drop rows with NaN values created by the lag shift
     df.dropna(inplace=True)

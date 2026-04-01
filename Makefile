@@ -4,7 +4,7 @@ VENV_DIR := .venv
 PYTHON := $(VENV_DIR)/bin/python
 PIP := $(VENV_DIR)/bin/pip
 
-.PHONY: help venv install preprocess train asp visualize benchmark benchmark-quick pipeline clean
+.PHONY: help venv install preprocess train asp visualize benchmark benchmark-quick benchmark-best pipeline clean
 
 help:
 	@echo "Available targets:"
@@ -16,6 +16,7 @@ help:
 	@echo "  make visualize   - Generate result visualization plot"
 	@echo "  make benchmark   - Run full dCeNN-ELM benchmark sweep"
 	@echo "  make benchmark-quick - Run quick benchmark sweep"
+	@echo "  make benchmark-best - Run only the best tuned benchmark config"
 	@echo "  make pipeline    - Run full pipeline (preprocess -> train -> asp -> visualize)"
 	@echo "  make clean       - Remove generated outputs"
 
@@ -43,6 +44,9 @@ benchmark:
 
 benchmark-quick:
 	$(PYTHON) src/05_benchmark_dcenn_elm.py --quick
+
+benchmark-best:
+	$(PYTHON) src/05_benchmark_dcenn_elm.py --best-only
 
 pipeline: preprocess train asp visualize
 
